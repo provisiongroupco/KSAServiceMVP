@@ -1970,11 +1970,10 @@ def create_testing_commissioning_report(data):
             extract_info_table.cell(2, 1).text = canopy.get('model', '')
             # Get extract data first
             extract_data = canopy.get('extract_data', [])
-            # Sum design flowrates from all modules (convert from L/s to m³/s)
+            # Sum design flowrates from all modules (keep in L/s)
             total_extract_design_ls = sum(module.get('design_flowrate_ls', 0.0) for module in extract_data)
-            total_extract_design_m3s = total_extract_design_ls / 1000  # Convert L/s to m³/s
             extract_info_table.cell(3, 0).text = "Design Flowrate"
-            extract_info_table.cell(3, 1).text = f"{total_extract_design_m3s:.2f} m³/s"
+            extract_info_table.cell(3, 1).text = f"{total_extract_design_ls:.0f} L/s"
             extract_info_table.cell(4, 0).text = "Quantity of Canopy Sections"
             extract_info_table.cell(4, 1).text = str(canopy.get('modules', 1))
             extract_info_table.cell(5, 0).text = "Calculation"
@@ -2189,11 +2188,10 @@ def create_testing_commissioning_report(data):
                 supply_info_table.cell(2, 1).text = canopy.get('model', '')
                 # Get supply data first
                 supply_data = canopy.get('supply_data', [])
-                # Sum design flowrates from all modules (convert from L/s to m³/s)
+                # Sum design flowrates from all modules (keep in L/s)
                 total_supply_design_ls = sum(module.get('design_flowrate_ls', 0.0) for module in supply_data)
-                total_supply_design_m3s = total_supply_design_ls / 1000  # Convert L/s to m³/s
                 supply_info_table.cell(3, 0).text = "Design Flowrate"
-                supply_info_table.cell(3, 1).text = f"{total_supply_design_m3s:.2f} m³/s"
+                supply_info_table.cell(3, 1).text = f"{total_supply_design_ls:.0f} L/s"
                 supply_info_table.cell(4, 0).text = "Quantity of Canopy Sections"
                 supply_info_table.cell(4, 1).text = str(canopy.get('modules', 1))
                 supply_info_table.cell(5, 0).text = "Calculation"
