@@ -92,86 +92,9 @@ if 'kitchen_list' not in st.session_state:
 if 'form_data' not in st.session_state:
     st.session_state.form_data = {}
 
-# K-Factor lookup tables based on PDF documentation
-def get_extract_k_factor(num_filters, hood_type, with_uv=False):
-    """Get K-Factor for extract air based on number of KSA filters and hood type"""
-    # K-Factor tables in m³/h
-    if with_uv:
-        # UVF/UVI hoods with UV
-        uv_k_factors = {
-            1: 53.82,
-            2: 107.64,
-            3: 161.46,
-            4: 215.28,
-            5: 269.1,
-            6: 322.92
-        }
-        return uv_k_factors.get(num_filters, 0)
-    else:
-        # KVF/KVI standard hoods without UV
-        standard_k_factors = {
-            1: 67.21,
-            2: 134.46,
-            3: 201.67,
-            4: 268.88,
-            5: 336.09,
-            6: 403.30
-        }
-        return standard_k_factors.get(num_filters, 0)
-
-def get_supply_k_factor(hood_length):
-    """Get K-Factor for supply air based on hood length (H-555 model)"""
-    # K-Factor table for supply air (hood length in meters)
-    # Linear interpolation for values between table entries
-    supply_k_table = [
-        (1.0, 121.7),
-        (1.1, 133.9),
-        (1.2, 146.1),
-        (1.3, 158.2),
-        (1.4, 170.4),
-        (1.5, 182.6),
-        (1.6, 194.8),
-        (1.7, 207.0),
-        (1.8, 219.1),
-        (1.9, 231.3),
-        (2.0, 243.3),
-        (2.1, 255.5),
-        (2.2, 267.7),
-        (2.3, 279.9),
-        (2.4, 292.0),
-        (2.5, 304.2),
-        (2.6, 316.4),
-        (2.7, 328.6),
-        (2.8, 340.8),
-        (2.9, 352.9),
-        (3.0, 365.1),
-        (3.1, 377.3),
-        (3.2, 389.5),
-        (3.3, 401.7),
-        (3.4, 413.8),
-        (3.5, 426.0),
-        (3.6, 438.2),
-        (3.7, 450.4),
-        (3.8, 462.6),
-        (3.9, 474.7),
-        (4.0, 486.9)
-    ]
-    
-    # Find the appropriate K-factor
-    if hood_length <= 1.0:
-        return 121.7
-    elif hood_length >= 4.0:
-        return 486.9
-    else:
-        # Linear interpolation between values
-        for i in range(len(supply_k_table) - 1):
-            if supply_k_table[i][0] <= hood_length <= supply_k_table[i+1][0]:
-                x1, y1 = supply_k_table[i]
-                x2, y2 = supply_k_table[i+1]
-                # Linear interpolation
-                k_factor = y1 + (y2 - y1) * (hood_length - x1) / (x2 - x1)
-                return round(k_factor, 1)
-    return 0
+# K-Factor will now be manually entered by technicians
+# Default value is 0.0 for both extract and supply
+# Technicians can enter any K-Factor value based on their equipment and measurements
 
 def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
     """Recursively render a checklist item with all its conditional logic"""
@@ -1918,10 +1841,19 @@ def create_testing_commissioning_report(data):
     
     canopy_data = data.get('canopy_data', [])
     
+    # Track if we've added any canopy data
+    canopies_added = 0
+    
     for canopy_idx, canopy in enumerate(canopy_data):
-        # Add page break before each canopy (except the first one since we already have a page break)
-        if canopy_idx > 0:
+        # Skip empty canopies (no model selected)
+        if not canopy.get('model'):
+            continue
+            
+        # Add page break before each canopy (except the first one)
+        if canopies_added > 0:
             doc.add_page_break()
+        
+        canopies_added += 1
         
         # Check if this is a Mobichef model (only has checklist, no air data)
         if canopy.get('model') == 'Mobichef':
@@ -1970,10 +1902,10 @@ def create_testing_commissioning_report(data):
             extract_info_table.cell(2, 1).text = canopy.get('model', '')
             # Get extract data first
             extract_data = canopy.get('extract_data', [])
-            # Sum design flowrates from all modules (keep in L/s)
-            total_extract_design_ls = sum(module.get('design_flowrate_ls', 0.0) for module in extract_data)
+            # Sum design flowrates from all modules (in m³/h)
+            total_extract_design_m3h = sum(module.get('design_flowrate_m3h', 0.0) for module in extract_data)
             extract_info_table.cell(3, 0).text = "Design Flowrate"
-            extract_info_table.cell(3, 1).text = f"{total_extract_design_ls:.0f} L/s"
+            extract_info_table.cell(3, 1).text = f"{total_extract_design_m3h:.0f} m³/h"
             extract_info_table.cell(4, 0).text = "Quantity of Canopy Sections"
             extract_info_table.cell(4, 1).text = str(canopy.get('modules', 1))
             extract_info_table.cell(5, 0).text = "Calculation"
@@ -1999,7 +1931,7 @@ def create_testing_commissioning_report(data):
                     
                     # Headers for CMW
                     headers = ['Hood #', 'Anemometer Reading\n(V - m/s)', 'Length of\nopening\n(mm)', 
-                              'Width of\nopening\n(meter)', 'Achieved\n(m³/h)', 'Design\n(L/s)', 'Percentage']
+                              'Width of\nopening\n(meter)', 'Achieved\n(m³/h)', 'Design\n(m³/h)', 'Percentage']
                     for col_idx, header in enumerate(headers):
                         cell = extract_table.cell(0, col_idx)
                         cell.text = header
@@ -2012,10 +1944,8 @@ def create_testing_commissioning_report(data):
                         achieved_m3s = section_data.get('flowrate_m3s', 0.0)
                         achieved_m3h = achieved_m3s * 3600  # Convert to m³/h
                         
-                        # Get design flowrate for this module (stored in L/s, convert to m³/h for display)
-                        design_ls = section_data.get('design_flowrate_ls', 0.0)
-                        design_m3s = design_ls / 1000  # Convert L/s to m³/s
-                        design_m3h = design_m3s * 3600  # Convert to m³/h
+                        # Get design flowrate for this module (already in m³/h)
+                        design_m3h = section_data.get('design_flowrate_m3h', 0.0)
                         
                         extract_table.cell(row_idx + 1, 0).text = f"M{row_idx + 1}"
                         extract_table.cell(row_idx + 1, 1).text = f"{section_data.get('anemometer', 0.0):.2f} m/s"
@@ -2024,11 +1954,11 @@ def create_testing_commissioning_report(data):
                         extract_table.cell(row_idx + 1, 2).text = f"{length_mm:.0f}"
                         extract_table.cell(row_idx + 1, 3).text = "0.09m"
                         extract_table.cell(row_idx + 1, 4).text = f"{achieved_m3h:.2f}"  # Display in m³/h
-                        extract_table.cell(row_idx + 1, 5).text = f"{design_ls:.0f}"  # Display in L/s
+                        extract_table.cell(row_idx + 1, 5).text = f"{design_m3h:.0f}"  # Display in m³/h
                         extract_table.cell(row_idx + 1, 6).text = f"{section_data.get('percentage', 0):.0f}%"
                         
                         total_achieved += achieved_m3h
-                        total_design += design_ls  # Sum in L/s
+                        total_design += design_m3h  # Sum in m³/h
                     
                     # Total row - only populate and border columns 3-6
                     # Leave first 3 columns empty (no borders)
@@ -2079,36 +2009,36 @@ def create_testing_commissioning_report(data):
                     extract_table.cell(total_row_idx, 6).text = f"{total_percentage:.0f}%"
                 else:
                     # Regular table with K-Factor
-                    extract_table = doc.add_table(rows=len(extract_data) + 2, cols=7)  # +2 for header and total
+                    extract_table = doc.add_table(rows=len(extract_data) + 2, cols=7)  # +2 for header and total, 7 cols (removed m³/s)
                     extract_table.alignment = WD_TABLE_ALIGNMENT.CENTER
                     
-                    # Headers
-                    headers = ['Module', 'Manometer\nReading (Pa)', 'K-Factor\n(m³/h)', 'Flowrate\n(m³/h)', 'Flowrate\n(m³/s)', 'Design\n(L/s)', 'Percentage']
+                    # Headers (removed Flowrate m³/s column)
+                    headers = ['Module', 'Manometer\nReading (Pa)', '√Pa', 'K-Factor', 'Flowrate\nAchieved\n(m³/h)', 'Design\n(m³/h)', 'Percentage']
                     for col_idx, header in enumerate(headers):
                         cell = extract_table.cell(0, col_idx)
                         cell.text = header
                     
                     total_achieved_m3h = 0
-                    total_achieved_m3s = 0
-                    total_design_ls = 0
+                    total_design_m3h = 0
                     
                     # Data rows
                     for row_idx, section_data in enumerate(extract_data):
+                        import math
                         flowrate_m3h = section_data.get('flowrate_m3h', 0)
-                        flowrate_m3s = section_data.get('flowrate_m3s', 0.0)
-                        design_ls = section_data.get('design_flowrate_ls', 0.0)
+                        design_m3h = section_data.get('design_flowrate_m3h', 0.0)
+                        tab_reading = section_data.get('tab_reading', 0.0)
+                        sqrt_pa = math.sqrt(tab_reading) if tab_reading > 0 else 0
                         
                         extract_table.cell(row_idx + 1, 0).text = f"M{row_idx + 1}"
-                        extract_table.cell(row_idx + 1, 1).text = f"{section_data.get('tab_reading', 0.0):.1f}"
-                        extract_table.cell(row_idx + 1, 2).text = f"{section_data.get('k_factor', 0.0):.1f}"
-                        extract_table.cell(row_idx + 1, 3).text = f"{flowrate_m3h:.0f}"
-                        extract_table.cell(row_idx + 1, 4).text = f"{flowrate_m3s:.3f}"
-                        extract_table.cell(row_idx + 1, 5).text = f"{design_ls:.0f}"
+                        extract_table.cell(row_idx + 1, 1).text = f"{tab_reading:.1f}"
+                        extract_table.cell(row_idx + 1, 2).text = f"{sqrt_pa:.2f}"
+                        extract_table.cell(row_idx + 1, 3).text = f"{section_data.get('k_factor', 0.0):.1f}"
+                        extract_table.cell(row_idx + 1, 4).text = f"{flowrate_m3h:.0f}"
+                        extract_table.cell(row_idx + 1, 5).text = f"{design_m3h:.0f}"
                         extract_table.cell(row_idx + 1, 6).text = f"{section_data.get('percentage', 0):.0f}%"
                         
                         total_achieved_m3h += flowrate_m3h
-                        total_achieved_m3s += flowrate_m3s
-                        total_design_ls += design_ls
+                        total_design_m3h += design_m3h
                     
                     # Total row
                     total_row_idx = len(extract_data) + 1
@@ -2117,8 +2047,8 @@ def create_testing_commissioning_report(data):
                     from docx.oxml import OxmlElement
                     from docx.oxml.ns import qn
                     
-                    # First two columns empty (no borders)
-                    for col_idx in range(2):
+                    # First three columns empty (no borders) - accounting for new √Pa column
+                    for col_idx in range(3):
                         cell = extract_table.cell(total_row_idx, col_idx)
                         tcPr = cell._tc.get_or_add_tcPr()
                         tcBorders = OxmlElement('w:tcBorders')
@@ -2128,8 +2058,8 @@ def create_testing_commissioning_report(data):
                             tcBorders.append(border)
                         tcPr.append(tcBorders)
                     
-                    # Column 2: "TOTAL" text
-                    total_cell = extract_table.cell(total_row_idx, 2)
+                    # Column 3: "TOTAL" text (accounting for new √Pa column)
+                    total_cell = extract_table.cell(total_row_idx, 3)
                     total_cell.text = "TOTAL"
                     total_tcPr = total_cell._tc.get_or_add_tcPr()
                     total_shading = OxmlElement('w:shd')
@@ -2147,15 +2077,12 @@ def create_testing_commissioning_report(data):
                             run.font.size = Pt(10)
                             run.font.name = 'Arial'
                     
-                    # Fill in total values
-                    extract_table.cell(total_row_idx, 3).text = f"{total_achieved_m3h:.0f}"
-                    extract_table.cell(total_row_idx, 4).text = f"{total_achieved_m3s:.3f}"
-                    extract_table.cell(total_row_idx, 5).text = f"{total_design_ls:.0f}"
+                    # Fill in total values (adjusted for removed m³/s column)
+                    extract_table.cell(total_row_idx, 4).text = f"{total_achieved_m3h:.0f}"
+                    extract_table.cell(total_row_idx, 5).text = f"{total_design_m3h:.0f}"
                     
                     # Calculate percentage
-                    if total_design_ls > 0:
-                        # Convert design from L/s to m³/h for percentage calculation
-                        total_design_m3h = (total_design_ls / 1000) * 3600
+                    if total_design_m3h > 0:
                         total_percentage = (total_achieved_m3h / total_design_m3h) * 100
                     else:
                         total_percentage = 0
@@ -2188,10 +2115,10 @@ def create_testing_commissioning_report(data):
                 supply_info_table.cell(2, 1).text = canopy.get('model', '')
                 # Get supply data first
                 supply_data = canopy.get('supply_data', [])
-                # Sum design flowrates from all modules (keep in L/s)
-                total_supply_design_ls = sum(module.get('design_flowrate_ls', 0.0) for module in supply_data)
+                # Sum design flowrates from all modules (in m³/h)
+                total_supply_design_m3h = sum(module.get('design_flowrate_m3h', 0.0) for module in supply_data)
                 supply_info_table.cell(3, 0).text = "Design Flowrate"
-                supply_info_table.cell(3, 1).text = f"{total_supply_design_ls:.0f} L/s"
+                supply_info_table.cell(3, 1).text = f"{total_supply_design_m3h:.0f} m³/h"
                 supply_info_table.cell(4, 0).text = "Quantity of Canopy Sections"
                 supply_info_table.cell(4, 1).text = str(canopy.get('modules', 1))
                 supply_info_table.cell(5, 0).text = "Calculation"
@@ -2202,24 +2129,80 @@ def create_testing_commissioning_report(data):
                 
                 # Supply Air Readings Table (connected to info table)
                 if supply_data:
-                    supply_table = doc.add_table(rows=len(supply_data) + 1, cols=7)
+                    supply_table = doc.add_table(rows=len(supply_data) + 2, cols=7)  # +2 for header and total
                     supply_table.alignment = WD_TABLE_ALIGNMENT.CENTER
                     
-                    # Headers
-                    headers = ['Module', 'Manometer\nReading (Pa)', 'K-Factor\n(m³/h)', 'Flowrate\n(m³/h)', 'Flowrate\n(m³/s)', 'Design\n(L/s)', 'Percentage']
+                    # Headers (changed to m³/h for consistency)
+                    headers = ['Module', 'Manometer\nReading (Pa)', '√Pa', 'K-Factor', 'Flowrate\n(m³/h)', 'Design\n(m³/h)', 'Percentage']
                     for col_idx, header in enumerate(headers):
                         cell = supply_table.cell(0, col_idx)
                         cell.text = header
                     
+                    import math
+                    total_flowrate_m3h = 0
+                    total_design_m3h = 0
+                    
                     # Data rows
                     for row_idx, section_data in enumerate(supply_data):
+                        tab_reading = section_data.get('tab_reading', 0.0)
+                        sqrt_pa = math.sqrt(tab_reading) if tab_reading > 0 else 0
+                        flowrate_m3h = section_data.get('flowrate_m3h', 0)
+                        design_m3h = section_data.get('design_flowrate_m3h', 0.0)
+                        
                         supply_table.cell(row_idx + 1, 0).text = f"M{row_idx + 1}"
-                        supply_table.cell(row_idx + 1, 1).text = f"{section_data.get('tab_reading', 0.0):.1f}"
-                        supply_table.cell(row_idx + 1, 2).text = f"{section_data.get('k_factor', 0.0):.1f}"
-                        supply_table.cell(row_idx + 1, 3).text = f"{section_data.get('flowrate_m3h', 0):.0f}"
-                        supply_table.cell(row_idx + 1, 4).text = f"{section_data.get('flowrate_m3s', 0.0):.3f}"
-                        supply_table.cell(row_idx + 1, 5).text = f"{section_data.get('design_flowrate_ls', 0.0):.0f}"
+                        supply_table.cell(row_idx + 1, 1).text = f"{tab_reading:.1f}"
+                        supply_table.cell(row_idx + 1, 2).text = f"{sqrt_pa:.1f}"
+                        supply_table.cell(row_idx + 1, 3).text = f"{section_data.get('k_factor', 0.0):.1f}"
+                        supply_table.cell(row_idx + 1, 4).text = f"{flowrate_m3h:.0f}"
+                        supply_table.cell(row_idx + 1, 5).text = f"{design_m3h:.0f}"
                         supply_table.cell(row_idx + 1, 6).text = f"{section_data.get('percentage', 0):.0f}%"
+                        
+                        total_flowrate_m3h += flowrate_m3h
+                        total_design_m3h += design_m3h
+                    
+                    # Total row
+                    total_row_idx = len(supply_data) + 1
+                    
+                    # First two columns empty (no borders)
+                    for col_idx in range(2):
+                        cell = supply_table.cell(total_row_idx, col_idx)
+                        tcPr = cell._tc.get_or_add_tcPr()
+                        tcBorders = OxmlElement('w:tcBorders')
+                        for border_name in ['w:top', 'w:left', 'w:bottom', 'w:right']:
+                            border = OxmlElement(border_name)
+                            border.set(qn('w:val'), 'nil')
+                            tcBorders.append(border)
+                        tcPr.append(tcBorders)
+                    
+                    # Column 2: "TOTAL" text
+                    total_cell = supply_table.cell(total_row_idx, 2)
+                    total_cell.text = "TOTAL"
+                    total_tcPr = total_cell._tc.get_or_add_tcPr()
+                    total_shading = OxmlElement('w:shd')
+                    total_shading.set(qn('w:val'), 'clear')
+                    total_shading.set(qn('w:color'), 'auto')
+                    total_shading.set(qn('w:fill'), '1F4788')  # Blue color
+                    total_tcPr.append(total_shading)
+                    
+                    # Make text white and bold
+                    for paragraph in total_cell.paragraphs:
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        for run in paragraph.runs:
+                            run.font.bold = True
+                            run.font.color.rgb = RGBColor(255, 255, 255)
+                            run.font.size = Pt(10)
+                            run.font.name = 'Arial'
+                    
+                    # Fill in total values
+                    supply_table.cell(total_row_idx, 4).text = f"{total_flowrate_m3h:.0f}"
+                    supply_table.cell(total_row_idx, 5).text = f"{total_design_m3h:.0f}"
+                    
+                    # Calculate percentage
+                    if total_design_m3h > 0:
+                        total_percentage = (total_flowrate_m3h / total_design_m3h) * 100
+                    else:
+                        total_percentage = 0
+                    supply_table.cell(total_row_idx, 6).text = f"{total_percentage:.0f}%"
                     
                     format_tc_table(supply_table, is_header=True)
         
@@ -2266,12 +2249,12 @@ def create_testing_commissioning_report(data):
         
         doc.add_paragraph()
     
-    # RECOMMENDATIONS SECTION
-    rec_heading = doc.add_heading('RECOMMENDATIONS', level=1)
+    # REMARKS SECTION
+    rec_heading = doc.add_heading('REMARKS', level=1)
     style_heading(rec_heading, level=1)
     
     recommendations_para = doc.add_paragraph()
-    recommendations_para.add_run(data.get('recommendations', 'No specific recommendations at this time.'))
+    recommendations_para.add_run(data.get('recommendations', 'No specific remarks at this time.'))
     
     # Add page break before signatures
     doc.add_page_break()
@@ -2309,8 +2292,18 @@ def create_testing_commissioning_report(data):
     
     # Customer signature
     sig_table.cell(0, 1).text = "Customer Representative:"
-    sig_table.cell(1, 1).text = "_" * 35
-    sig_table.cell(2, 1).text = data.get('customer_name', '')
+    
+    # Add customer signature image if available
+    if data.get('customer_signature'):
+        sig_cell = sig_table.cell(1, 1)
+        sig_para = sig_cell.paragraphs[0]
+        sig_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = sig_para.add_run()
+        run.add_picture(data.get('customer_signature'), width=Inches(1.5))
+    else:
+        sig_table.cell(1, 1).text = "_" * 35
+    
+    sig_table.cell(2, 1).text = data.get('customer_signatory', data.get('customer_name', ''))
     sig_table.cell(3, 1).text = f"Date: {datetime.now().strftime('%B %d, %Y')}"
     
     # Style signature table
@@ -2439,7 +2432,7 @@ def main():
     # Testing & Commissioning Report specific sections
     if report_type == "Testing and Commissioning Report":
         # Import canopy models and configuration
-        CANOPY_MODELS = ["", "KVF", "KVI", "UVF", "CMW", "CXW", "CMWF", "CMWI", "CMW-MUAP-CJ", "CMW-CJ", "KVD", "KVV", "Mobichef"]
+        CANOPY_MODELS = ["", "KVF", "KVI", "UVF", "UVI", "CMW", "CXW", "CMWF", "CMWI", "CMW-MUAP-CJ", "CMW-CJ", "KVD", "KVV", "Mobichef"]
         
         st.markdown("### Canopy Configuration")
         
@@ -2537,7 +2530,7 @@ def main():
                             'k_factor': 0.0,
                             'flowrate_m3h': 0.0,
                             'flowrate_m3s': 0.0,
-                            'design_flowrate_ls': 0.0  # Design flowrate in L/s
+                            'design_flowrate_m3h': 0.0  # Design flowrate in m³/h
                         })
                         st.session_state.canopy_data[i]['supply_data'].append({
                             'hood_length': 1.0,
@@ -2545,7 +2538,7 @@ def main():
                             'k_factor': 0.0,
                             'flowrate_m3h': 0.0,
                             'flowrate_m3s': 0.0,
-                            'design_flowrate_ls': 0.0  # Design flowrate in L/s
+                            'design_flowrate_m3h': 0.0  # Design flowrate in m³/h
                         })
                     
                     # Trim module data if needed
@@ -2566,7 +2559,7 @@ def main():
                         
                         if is_cmw:
                             # CMW type uses different calculation: QE = V × L × W
-                            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+                            col1, col2, col3, col4, col5, col6 = st.columns(6)
                         
                         if is_cmw:
                             # CMW type calculation
@@ -2596,21 +2589,21 @@ def main():
                                 width_opening = st.number_input(
                                     "Width (m)",
                                     value=0.09,
-                                    disabled=True,
+                                    disabled=False,
                                     key=f"width_opening_{i}_{j}",
                                     help="Width of opening (fixed at 0.09m)"
                                 )
                                 st.session_state.canopy_data[i]['extract_data'][j]['width_opening'] = 0.09
                             
                             with col4:
-                                # Design flowrate input in L/s
+                                # Design flowrate input in m³/h
                                 st.number_input(
-                                    "Design (L/s)",
+                                    "Design (m³/h)",
                                     min_value=0.0,
-                                    step=10.0,
+                                    step=100.0,
                                     key=f"extract_design_{i}_{j}",
-                                    value=st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_ls', 0.0),
-                                    on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'design_flowrate_ls': st.session_state[f"extract_design_{idx}_{jdx}"]})
+                                    value=st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_m3h', 0.0),
+                                    on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'design_flowrate_m3h': st.session_state[f"extract_design_{idx}_{jdx}"]})
                                 )
                             
                             # Calculate flowrate using QE = V × L × W
@@ -2631,25 +2624,16 @@ def main():
                                     key=f"extract_m3h_{i}_{j}"
                                 )
                             
-                            with col6:
-                                st.text_input(
-                                    "Flowrate (m³/s)",
-                                    value=f"{flowrate_m3s:.3f}",
-                                    disabled=True,
-                                    key=f"extract_m3s_{i}_{j}"
-                                )
-                            
                             # Calculate percentage using module's design flowrate
-                            design_flowrate_ls = st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_ls', 0.0)
-                            if design_flowrate_ls > 0:
-                                # Convert L/s to m³/s for comparison
-                                design_flowrate_m3s = design_flowrate_ls / 1000
-                                percentage = (flowrate_m3s / design_flowrate_m3s) * 100
+                            design_flowrate_m3h = st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_m3h', 0.0)
+                            if design_flowrate_m3h > 0:
+                                # Compare m³/h values directly
+                                percentage = (flowrate_m3h / design_flowrate_m3h) * 100
                             else:
                                 percentage = 0
                             st.session_state.canopy_data[i]['extract_data'][j]['percentage'] = percentage
                             
-                            with col7:
+                            with col6:
                                 st.text_input(
                                     "Percentage",
                                     value=f"{percentage:.0f}%",
@@ -2658,7 +2642,7 @@ def main():
                                 )
                         else:
                             # Regular calculation for non-CMW types
-                            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+                            col1, col2, col3, col4, col5, col6 = st.columns(6)
                             
                             with col1:
                                 # Number of KSA filters for this module
@@ -2674,14 +2658,14 @@ def main():
                                 num_ksa_filters = st.session_state.canopy_data[i]['extract_data'][j].get('num_ksa_filters', 1)
                             
                             with col2:
-                                # Design flowrate input in L/s
+                                # Design flowrate input in m³/h
                                 st.number_input(
-                                    "Design (L/s)",
+                                    "Design (m³/h)",
                                     min_value=0.0,
-                                    step=10.0,
+                                    step=100.0,
                                     key=f"extract_design_{i}_{j}",
-                                    value=st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_ls', 0.0),
-                                    on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'design_flowrate_ls': st.session_state[f"extract_design_{idx}_{jdx}"]})
+                                    value=st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_m3h', 0.0),
+                                    on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'design_flowrate_m3h': st.session_state[f"extract_design_{idx}_{jdx}"]})
                                 )
                             
                             with col3:
@@ -2696,29 +2680,29 @@ def main():
                                     on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'tab_reading': st.session_state[f"extract_tab_{idx}_{jdx}"]})
                                 )
                             
-                            # Get automatic K-Factor based on this module's number of filters
-                            # Use the most current value
-                            current_ksa = st.session_state.canopy_data[i]['extract_data'][j].get('num_ksa_filters', 1)
-                            auto_k_factor_extract = get_extract_k_factor(current_ksa, canopy_model, has_uv)
-                            
                             with col4:
-                                # Display auto-calculated K-Factor (read-only)
-                                st.text_input(
-                                    "K-Factor (m³/h)",
-                                    value=f"{auto_k_factor_extract:.1f}",
-                                    disabled=True,
-                                    key=f"extract_k_display_{i}_{j}",
-                                    help=f"Auto-calculated based on {num_ksa_filters} KSA filter(s)"
+                                # Manual K-Factor entry with default of 0.0
+                                k_factor_extract = st.number_input(
+                                    "K-Factor",
+                                    min_value=0.0,
+                                    max_value=1000.0,
+                                    step=0.1,
+                                    key=f"extract_k_factor_{i}_{j}",
+                                    value=st.session_state.canopy_data[i]['extract_data'][j].get('k_factor', 0.0),
+                                    format="%.1f",
+                                    help="Enter the K-Factor value manually",
+                                    on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['extract_data'][jdx].update({'k_factor': st.session_state[f"extract_k_factor_{idx}_{jdx}"]})
                                 )
                                 # Store the K-Factor in data
-                                st.session_state.canopy_data[i]['extract_data'][j]['k_factor'] = auto_k_factor_extract
+                                st.session_state.canopy_data[i]['extract_data'][j]['k_factor'] = k_factor_extract
                             
                             # Calculate flowrates
                             # Use the most current values
                             current_tab = st.session_state.canopy_data[i]['extract_data'][j].get('tab_reading', 0.0)
-                            if current_tab > 0 and auto_k_factor_extract > 0:
+                            k_factor_extract = st.session_state.canopy_data[i]['extract_data'][j].get('k_factor', 0.0)
+                            if current_tab > 0 and k_factor_extract > 0:
                                 import math
-                                flowrate_m3h = auto_k_factor_extract * math.sqrt(current_tab)
+                                flowrate_m3h = k_factor_extract * math.sqrt(current_tab)
                                 flowrate_m3s = flowrate_m3h / 3600
                                 st.session_state.canopy_data[i]['extract_data'][j]['flowrate_m3h'] = flowrate_m3h
                                 st.session_state.canopy_data[i]['extract_data'][j]['flowrate_m3s'] = flowrate_m3s
@@ -2734,25 +2718,16 @@ def main():
                                     key=f"extract_m3h_{i}_{j}"
                                 )
                             
-                            with col6:
-                                st.text_input(
-                                    "Flowrate (m³/s)",
-                                    value=f"{flowrate_m3s:.3f}",
-                                    disabled=True,
-                                    key=f"extract_m3s_{i}_{j}"
-                                )
-                            
                             # Calculate percentage using module's design flowrate
-                            design_flowrate_ls = st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_ls', 0.0)
-                            if design_flowrate_ls > 0:
-                                # Convert L/s to m³/s for comparison
-                                design_flowrate_m3s = design_flowrate_ls / 1000
-                                percentage = (flowrate_m3s / design_flowrate_m3s) * 100
+                            design_flowrate_m3h = st.session_state.canopy_data[i]['extract_data'][j].get('design_flowrate_m3h', 0.0)
+                            if design_flowrate_m3h > 0:
+                                # Compare m³/h values directly
+                                percentage = (flowrate_m3h / design_flowrate_m3h) * 100
                             else:
                                 percentage = 0
                             st.session_state.canopy_data[i]['extract_data'][j]['percentage'] = percentage
                             
-                            with col7:
+                            with col6:
                                 st.text_input(
                                     "Percentage",
                                     value=f"{percentage:.0f}%",
@@ -2766,7 +2741,7 @@ def main():
                     
                     for j in range(num_modules):
                         st.markdown(f"**Module {j+1}**")
-                        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+                        col1, col2, col3, col4, col5, col6 = st.columns(6)
                         
                         with col1:
                             # Hood/Plenum length for this module
@@ -2781,17 +2756,16 @@ def main():
                                 help="Hood length for this module",
                                 on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['supply_data'][jdx].update({'hood_length': st.session_state[f"hood_length_{idx}_{jdx}"]})
                             )
-                            hood_length = st.session_state.canopy_data[i]['supply_data'][j].get('hood_length', 1.0)
                         
                         with col2:
-                            # Design flowrate input in L/s
+                            # Design flowrate input in m³/h
                             st.number_input(
-                                "Design (L/s)",
+                                "Design (m³/h)",
                                 min_value=0.0,
-                                step=10.0,
+                                step=100.0,
                                 key=f"supply_design_{i}_{j}",
-                                value=st.session_state.canopy_data[i]['supply_data'][j].get('design_flowrate_ls', 0.0),
-                                on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['supply_data'][jdx].update({'design_flowrate_ls': st.session_state[f"supply_design_{idx}_{jdx}"]})
+                                value=st.session_state.canopy_data[i]['supply_data'][j].get('design_flowrate_m3h', 0.0),
+                                on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['supply_data'][jdx].update({'design_flowrate_m3h': st.session_state[f"supply_design_{idx}_{jdx}"]})
                             )
                         
                         with col3:
@@ -2806,27 +2780,28 @@ def main():
                                 on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['supply_data'][jdx].update({'tab_reading': st.session_state[f"supply_tab_{idx}_{jdx}"]})
                             )
                         
-                        # Get automatic K-Factor based on this module's hood length
-                        current_hood_length = st.session_state.canopy_data[i]['supply_data'][j].get('hood_length', 1.0)
-                        auto_k_factor_supply = get_supply_k_factor(current_hood_length)
-                        
                         with col4:
-                            # Display auto-calculated K-Factor (read-only)
-                            st.text_input(
+                            # Manual K-Factor entry with default of 0.0
+                            k_factor_supply = st.number_input(
                                 "K-Factor (m³/h)",
-                                value=f"{auto_k_factor_supply:.1f}",
-                                disabled=True,
-                                key=f"supply_k_display_{i}_{j}",
-                                help=f"Auto-calculated based on {hood_length:.1f}m hood length"
+                                min_value=0.0,
+                                max_value=1000.0,
+                                step=0.1,
+                                key=f"supply_k_factor_{i}_{j}",
+                                value=st.session_state.canopy_data[i]['supply_data'][j].get('k_factor', 0.0),
+                                format="%.1f",
+                                help="Enter the K-Factor value manually",
+                                on_change=lambda idx=i, jdx=j: st.session_state.canopy_data[idx]['supply_data'][jdx].update({'k_factor': st.session_state[f"supply_k_factor_{idx}_{jdx}"]})
                             )
                             # Store the K-Factor in data
-                            st.session_state.canopy_data[i]['supply_data'][j]['k_factor'] = auto_k_factor_supply
+                            st.session_state.canopy_data[i]['supply_data'][j]['k_factor'] = k_factor_supply
                         
                         # Calculate flowrates
                         current_supply_tab = st.session_state.canopy_data[i]['supply_data'][j].get('tab_reading', 0.0)
-                        if current_supply_tab > 0 and auto_k_factor_supply > 0:
+                        k_factor_supply = st.session_state.canopy_data[i]['supply_data'][j].get('k_factor', 0.0)
+                        if current_supply_tab > 0 and k_factor_supply > 0:
                             import math
-                            flowrate_m3h = auto_k_factor_supply * math.sqrt(current_supply_tab)
+                            flowrate_m3h = k_factor_supply * math.sqrt(current_supply_tab)
                             flowrate_m3s = flowrate_m3h / 3600
                             st.session_state.canopy_data[i]['supply_data'][j]['flowrate_m3h'] = flowrate_m3h
                             st.session_state.canopy_data[i]['supply_data'][j]['flowrate_m3s'] = flowrate_m3s
@@ -2842,25 +2817,16 @@ def main():
                                 key=f"supply_m3h_{i}_{j}"
                             )
                         
-                        with col6:
-                            st.text_input(
-                                "Flowrate (m³/s)",
-                                value=f"{flowrate_m3s:.3f}",
-                                disabled=True,
-                                key=f"supply_m3s_{i}_{j}"
-                            )
-                        
                         # Calculate percentage using module's design flowrate
-                        design_flowrate_ls = st.session_state.canopy_data[i]['supply_data'][j].get('design_flowrate_ls', 0.0)
-                        if design_flowrate_ls > 0:
-                            # Convert L/s to m³/s for comparison
-                            design_flowrate_m3s = design_flowrate_ls / 1000
-                            percentage = (flowrate_m3s / design_flowrate_m3s) * 100
+                        design_flowrate_m3h = st.session_state.canopy_data[i]['supply_data'][j].get('design_flowrate_m3h', 0.0)
+                        if design_flowrate_m3h > 0:
+                            # Compare m³/h values directly
+                            percentage = (flowrate_m3h / design_flowrate_m3h) * 100
                         else:
                             percentage = 0
                         st.session_state.canopy_data[i]['supply_data'][j]['percentage'] = percentage
                         
-                        with col7:
+                        with col6:
                             st.text_input(
                                 "Percentage",
                                 value=f"{percentage:.0f}%",
@@ -3413,91 +3379,93 @@ def main():
             st.info("No work items added. Click 'Add Work Item' to add work performed.")
     
     # Spare Parts Section (outside form to allow button interactions)
-    st.markdown("### Spare Parts Required")
+    # Hide spare parts section for Testing and Commissioning Report
+    if report_type != "Testing and Commissioning Report":
+        st.markdown("### Spare Parts Required")
     
-    # Initialize spare parts list in session state if not exists
-    if 'spare_parts' not in st.session_state:
-        st.session_state.spare_parts = []
+        # Initialize spare parts list in session state if not exists
+        if 'spare_parts' not in st.session_state:
+            st.session_state.spare_parts = []
     
-    # Initialize a counter for spare parts to ensure unique keys
-    if 'spare_parts_counter' not in st.session_state:
-        st.session_state.spare_parts_counter = 0
+        # Initialize a counter for spare parts to ensure unique keys
+        if 'spare_parts_counter' not in st.session_state:
+            st.session_state.spare_parts_counter = 0
     
-    # Function to add a spare part row
-    def add_spare_part():
-        # Use timestamp to ensure truly unique IDs
-        import time
-        unique_id = f"{st.session_state.spare_parts_counter}_{int(time.time() * 1000)}"
-        st.session_state.spare_parts.append({
-            'id': unique_id,
-            'name': '', 
-            'quantity': 1
-        })
-        st.session_state.spare_parts_counter += 1
+        # Function to add a spare part row
+        def add_spare_part():
+            # Use timestamp to ensure truly unique IDs
+            import time
+            unique_id = f"{st.session_state.spare_parts_counter}_{int(time.time() * 1000)}"
+            st.session_state.spare_parts.append({
+                'id': unique_id,
+                'name': '', 
+                'quantity': 1
+            })
+            st.session_state.spare_parts_counter += 1
     
-    # Function to remove a spare part row
-    def remove_spare_part(index):
-        st.session_state.spare_parts.pop(index)
+        # Function to remove a spare part row
+        def remove_spare_part(index):
+            st.session_state.spare_parts.pop(index)
     
-    # Add new spare part button
-    col_add1, col_add2 = st.columns([1, 3])
-    with col_add1:
-        if st.button("➕ Add Spare Part", type="secondary", key="add_spare_part_btn"):
-            add_spare_part()
+        # Add new spare part button
+        col_add1, col_add2 = st.columns([1, 3])
+        with col_add1:
+            if st.button("➕ Add Spare Part", type="secondary", key="add_spare_part_btn"):
+                add_spare_part()
+                st.rerun()
+    
+        # Helper functions for updating spare parts
+        def update_part_name(index, part_id):
+            if f"spare_part_name_{part_id}" in st.session_state:
+                st.session_state.spare_parts[index]['name'] = st.session_state[f"spare_part_name_{part_id}"]
+        
+        def update_part_quantity(index, part_id):
+            if f"spare_part_qty_{part_id}" in st.session_state:
+                st.session_state.spare_parts[index]['quantity'] = st.session_state[f"spare_part_qty_{part_id}"]
+    
+        # Display existing spare parts
+        parts_to_remove = []
+        for i, part in enumerate(st.session_state.spare_parts):
+            col1, col2, col3 = st.columns([3, 1, 0.5])
+            with col1:
+                # Use the part's ID for the key to ensure uniqueness
+                # If part doesn't have an ID, create one
+                if 'id' not in part:
+                    import time
+                    part['id'] = f"{st.session_state.spare_parts_counter}_{int(time.time() * 1000)}_{i}"
+                    st.session_state.spare_parts_counter += 1
+                part_id = part['id']
+                st.text_input(
+                    f"Spare Part {i+1} Name",
+                    value=part.get('name', ''),
+                    key=f"spare_part_name_{part_id}",
+                    placeholder="e.g., KSA Filter, UV Lamp, Solenoid Valve",
+                    on_change=update_part_name,
+                    args=(i, part_id)
+                )
+            with col2:
+                st.number_input(
+                    f"Quantity",
+                    value=part.get('quantity', 1),
+                    min_value=1,
+                    key=f"spare_part_qty_{part_id}",
+                    on_change=update_part_quantity,
+                    args=(i, part_id)
+                )
+            with col3:
+                st.markdown("<br>", unsafe_allow_html=True)  # Add spacing
+                if st.button("🗑️", key=f"remove_part_{part_id}", help="Remove this spare part"):
+                    parts_to_remove.append(i)
+    
+        # Remove parts marked for deletion
+        if parts_to_remove:
+            for index in reversed(parts_to_remove):
+                remove_spare_part(index)
             st.rerun()
-    
-    # Helper functions for updating spare parts
-    def update_part_name(index, part_id):
-        if f"spare_part_name_{part_id}" in st.session_state:
-            st.session_state.spare_parts[index]['name'] = st.session_state[f"spare_part_name_{part_id}"]
-    
-    def update_part_quantity(index, part_id):
-        if f"spare_part_qty_{part_id}" in st.session_state:
-            st.session_state.spare_parts[index]['quantity'] = st.session_state[f"spare_part_qty_{part_id}"]
-    
-    # Display existing spare parts
-    parts_to_remove = []
-    for i, part in enumerate(st.session_state.spare_parts):
-        col1, col2, col3 = st.columns([3, 1, 0.5])
-        with col1:
-            # Use the part's ID for the key to ensure uniqueness
-            # If part doesn't have an ID, create one
-            if 'id' not in part:
-                import time
-                part['id'] = f"{st.session_state.spare_parts_counter}_{int(time.time() * 1000)}_{i}"
-                st.session_state.spare_parts_counter += 1
-            part_id = part['id']
-            st.text_input(
-                f"Spare Part {i+1} Name",
-                value=part.get('name', ''),
-                key=f"spare_part_name_{part_id}",
-                placeholder="e.g., KSA Filter, UV Lamp, Solenoid Valve",
-                on_change=update_part_name,
-                args=(i, part_id)
-            )
-        with col2:
-            st.number_input(
-                f"Quantity",
-                value=part.get('quantity', 1),
-                min_value=1,
-                key=f"spare_part_qty_{part_id}",
-                on_change=update_part_quantity,
-                args=(i, part_id)
-            )
-        with col3:
-            st.markdown("<br>", unsafe_allow_html=True)  # Add spacing
-            if st.button("🗑️", key=f"remove_part_{part_id}", help="Remove this spare part"):
-                parts_to_remove.append(i)
-    
-    # Remove parts marked for deletion
-    if parts_to_remove:
-        for index in reversed(parts_to_remove):
-            remove_spare_part(index)
-        st.rerun()
-    
-    # If no spare parts added, show a note
-    if len(st.session_state.spare_parts) == 0:
-        st.info("No spare parts required. Click 'Add Spare Part' if parts are needed.")
+        
+        # If no spare parts added, show a note
+        if len(st.session_state.spare_parts) == 0:
+            st.info("No spare parts required. Click 'Add Spare Part' if parts are needed.")
     
     # Continue with the rest of the form
     with st.form("technical_report_form"):
@@ -3510,13 +3478,21 @@ def main():
                 height=120
             )
         
-        # Recommendations Section
-        st.markdown("### Recommendations")
-        recommendations = st.text_area(
-            "Recommendations",
-            placeholder="Suggest any follow-up actions, parts needed, or future maintenance...",
-            height=80
-        )
+        # Recommendations/Remarks Section
+        if report_type == "Testing and Commissioning Report":
+            st.markdown("### Remarks")
+            recommendations = st.text_area(
+                "Remarks",
+                placeholder="Enter any remarks or observations...",
+                height=80
+            )
+        else:
+            st.markdown("### Recommendations")
+            recommendations = st.text_area(
+                "Recommendations",
+                placeholder="Suggest any follow-up actions, parts needed, or future maintenance...",
+                height=80
+            )
         
         # Technician Information Section
         st.markdown("### Technician Information")
@@ -3765,7 +3741,9 @@ def main():
                     'recommendations': recommendations,
                     'technician_name': technician_name,
                     'service_date': service_date.strftime('%Y-%m-%d'),
-                    'technician_signature': signature_img
+                    'technician_signature': signature_img,
+                    'customer_signatory': st.session_state.get('customer_signatory', customer_name),
+                    'customer_signature': customer_signature_img
                 }
             elif report_type == "Technical Report":
                 report_data = {
@@ -3901,3 +3879,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
