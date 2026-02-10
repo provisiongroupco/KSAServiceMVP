@@ -2343,7 +2343,7 @@ def create_testing_commissioning_report(data):
 
 def main():
     # Check for shared form data in URL parameters
-    query_params = st.experimental_get_query_params()
+    query_params = st.query_params
     
     # Debug: Show what parameters we have
     if query_params:
