@@ -561,7 +561,13 @@ def collect_form_data():
                 kitchen_data['equipment_list'].append(equipment_data)
             
             form_data['kitchen_data']['kitchen_list'].append(kitchen_data)
-    
+
+        # Include T&C report data (canopy_data, tc_checklists)
+        if st.session_state.get('canopy_data'):
+            form_data['canopy_data'] = st.session_state.canopy_data
+        if st.session_state.get('tc_checklists'):
+            form_data['tc_checklists'] = st.session_state.tc_checklists
+
         return form_data
     except Exception as e:
         st.error(f"Error collecting form data: {str(e)}")
@@ -703,7 +709,13 @@ def restore_form_data(form_data):
                     kitchen['equipment_list'].append(equipment)
                 
                 st.session_state.kitchen_list.append(kitchen)
-        
+
+        # Restore T&C report data
+        if 'canopy_data' in form_data:
+            st.session_state.canopy_data = form_data['canopy_data']
+        if 'tc_checklists' in form_data:
+            st.session_state.tc_checklists = form_data['tc_checklists']
+
         return True
     except Exception as e:
         st.error(f"Error restoring form data: {str(e)}")
@@ -777,10 +789,6 @@ def auto_save_draft():
         if not customer:
             return
 
-        if st.session_state.get('canopy_data'):
-            form_data['canopy_data'] = st.session_state.canopy_data
-        if st.session_state.get('tc_checklists'):
-            form_data['tc_checklists'] = st.session_state.tc_checklists
         form_data['_meta'] = {'saved_at': datetime.now().isoformat()}
 
         date = st.session_state.get('report_date', '')
@@ -2499,10 +2507,6 @@ def main():
                     idx = labels.index(choice) - 1
                     _, draft_path, draft_data = drafts[idx]
                     restore_form_data(draft_data)
-                    if 'canopy_data' in draft_data:
-                        st.session_state.canopy_data = draft_data['canopy_data']
-                    if 'tc_checklists' in draft_data:
-                        st.session_state.tc_checklists = draft_data['tc_checklists']
                     st.session_state['_active_draft_path'] = str(draft_path)
                     st.session_state['_draft_handled'] = True
                     st.session_state['_show_draft_restored'] = True
