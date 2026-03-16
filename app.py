@@ -728,12 +728,10 @@ def generate_shareable_link():
 
 
 def _browser_fingerprint():
-    """Derive a short, stable ID from the browser's User-Agent + IP."""
+    """Derive a short, stable ID from the browser's User-Agent."""
     try:
         ua = st.context.headers.get('User-Agent', 'unknown')
-        ip = st.context.headers.get('X-Forwarded-For',
-             st.context.headers.get('X-Real-Ip', ''))
-        return hashlib.md5(f"{ua}|{ip}".encode()).hexdigest()[:12]
+        return hashlib.md5(ua.encode()).hexdigest()[:12]
     except Exception:
         return 'default'
 
