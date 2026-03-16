@@ -790,8 +790,8 @@ def auto_save_draft():
         path = _draft_dir_for_browser() / f"{safe}_{date}.json"
         with open(path, 'w') as f:
             json.dump(form_data, f, separators=(',', ':'), default=str)
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.error(f"Auto-save error: {e}")
 
 
 def clear_draft():
@@ -2471,6 +2471,21 @@ def main():
 
     # Sidebar
     with st.sidebar:
+        # DEBUG: temporary diagnostics (remove after testing)
+        with st.expander("🔧 Debug Info", expanded=False):
+            try:
+                fp = _browser_fingerprint()
+                st.write(f"Fingerprint: `{fp}`")
+                d = _draft_dir_for_browser()
+                st.write(f"Draft dir: `{d}`")
+                st.write(f"Dir exists: {d.exists()}")
+                files = list(d.glob("*.json")) if d.exists() else []
+                st.write(f"Draft files: {len(files)}")
+                for f in files:
+                    st.write(f"  - {f.name}")
+            except Exception as e:
+                st.error(f"Debug error: {e}")
+
         # Draft picker — shows only this browser's drafts
         if not st.session_state.get('_draft_handled'):
             drafts = list_drafts()
