@@ -6,7 +6,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 import io
 import os
+from pathlib import Path
 from PIL import Image
+import hashlib
 from streamlit_drawable_canvas import st_canvas
 import numpy as np
 import json
@@ -91,6 +93,10 @@ if 'kitchen_list' not in st.session_state:
     st.session_state.kitchen_list = []
 if 'form_data' not in st.session_state:
     st.session_state.form_data = {}
+
+# Auto-save drafts directory (server-side, keyed per browser)
+DRAFTS_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "drafts"
+DRAFTS_DIR.mkdir(exist_ok=True)
 
 # K-Factor will now be manually entered by technicians
 # Default value is 0.0 for both extract and supply
@@ -519,7 +525,7 @@ def collect_form_data():
                 'recommendations': st.session_state.get('recommendations', ''),
                 'technician_name': st.session_state.get('technician_name', ''),
                 'service_date': st.session_state.get('service_date', datetime.now()).isoformat() if st.session_state.get('service_date') else None,
-                'report_type': st.session_state.get('report_type', 'Technical Report'),
+                'report_type': st.session_state.get('report_type_selector', 'Technical Report'),
                 'work_performed_list': st.session_state.get('work_performed_list', [])
             },
             'kitchen_data': {
@@ -655,9 +661,9 @@ def restore_form_data(form_data):
                     part['id'] = f"restored_{i}_{int(time.time() * 1000)}"
             st.session_state['spare_parts_counter'] = len(st.session_state['spare_parts'])
         
-        # Restore report type
+        # Restore report type (used by the sidebar selectbox)
         if 'report_type' in basic_info:
-            st.session_state['report_type'] = basic_info['report_type']
+            st.session_state['report_type_selector'] = basic_info['report_type']
         
         # Restore work performed list for General Service Report
         if 'work_performed_list' in basic_info and basic_info['work_performed_list']:
@@ -719,6 +725,94 @@ def generate_shareable_link():
         share_url = f"{base_url}?data={encoded_data}"
         return share_url
     return None
+
+
+def _browser_fingerprint():
+    """Derive a short, stable ID from the browser's User-Agent + IP."""
+    try:
+        ua = st.context.headers.get('User-Agent', 'unknown')
+        ip = st.context.headers.get('X-Forwarded-For',
+             st.context.headers.get('X-Real-Ip', ''))
+        return hashlib.md5(f"{ua}|{ip}".encode()).hexdigest()[:12]
+    except Exception:
+        return 'default'
+
+
+def _draft_dir_for_browser():
+    """Return the per-browser drafts subdirectory."""
+    fp = _browser_fingerprint()
+    d = DRAFTS_DIR / fp
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def list_drafts():
+    """Return [(label, path, data), ...] for this browser's drafts."""
+    drafts = []
+    d = _draft_dir_for_browser()
+    for f in sorted(d.glob("*.json"), key=os.path.getmtime, reverse=True):
+        try:
+            data = json.loads(f.read_text())
+            basic = data.get('basic_info', {})
+            customer = basic.get('customer_name', 'Unknown')
+            rtype = basic.get('report_type', '')
+            saved = data.get('_meta', {}).get('saved_at', '')
+            if saved:
+                time_str = datetime.fromisoformat(saved).strftime('%b %d, %I:%M %p')
+            else:
+                time_str = ''
+            label = f"{customer} — {rtype} ({time_str})"
+            drafts.append((label, f, data))
+        except Exception:
+            continue
+    return drafts
+
+
+def auto_save_draft():
+    """Auto-save current form data to a per-browser JSON file."""
+    try:
+        form_data = collect_form_data()
+        if not form_data:
+            return
+        basic = form_data.get('basic_info', {})
+        customer = basic.get('customer_name', '').strip()
+        if not customer:
+            return
+
+        if st.session_state.get('canopy_data'):
+            form_data['canopy_data'] = st.session_state.canopy_data
+        if st.session_state.get('tc_checklists'):
+            form_data['tc_checklists'] = st.session_state.tc_checklists
+        form_data['_meta'] = {'saved_at': datetime.now().isoformat()}
+
+        date = st.session_state.get('report_date', '')
+        safe = "".join(c if c.isalnum() else "_" for c in customer.lower())
+        path = _draft_dir_for_browser() / f"{safe}_{date}.json"
+        with open(path, 'w') as f:
+            json.dump(form_data, f, separators=(',', ':'), default=str)
+    except Exception:
+        pass
+
+
+def clear_draft():
+    """Delete the current draft file."""
+    try:
+        tracked = st.session_state.pop('_active_draft_path', None)
+        if tracked:
+            p = Path(tracked)
+            if p.exists():
+                p.unlink()
+        else:
+            customer = st.session_state.get('customer_name', '').strip()
+            date = st.session_state.get('report_date', '')
+            if customer:
+                safe = "".join(c if c.isalnum() else "_" for c in customer.lower())
+                p = _draft_dir_for_browser() / f"{safe}_{date}.json"
+                if p.exists():
+                    p.unlink()
+        st.session_state.pop('_draft_handled', None)
+    except Exception:
+        pass
 
 
 def create_technical_report(data):
@@ -2371,20 +2465,50 @@ def main():
                 st.error("❌ Failed to restore form data from link")
         else:
             st.error("❌ Failed to decode shared link data")
-    
+
     # Header
     st.markdown('<h1 class="main-header">Service Reports System</h1>', unsafe_allow_html=True)
-    
-    # Sidebar for report type selection
+
+    # Sidebar
     with st.sidebar:
+        # Draft picker — shows only this browser's drafts
+        if not st.session_state.get('_draft_handled'):
+            drafts = list_drafts()
+            if drafts:
+                st.markdown("### Resume Previous Report")
+                labels = ["-- Select --"] + [d[0] for d in drafts] + ["Start New Report"]
+                choice = st.selectbox("Select a report to resume", labels,
+                                      key="_draft_picker")
+                if choice == "Start New Report":
+                    st.session_state['_draft_handled'] = True
+                    st.rerun()
+                elif choice != "-- Select --":
+                    idx = labels.index(choice) - 1
+                    _, draft_path, draft_data = drafts[idx]
+                    restore_form_data(draft_data)
+                    if 'canopy_data' in draft_data:
+                        st.session_state.canopy_data = draft_data['canopy_data']
+                    if 'tc_checklists' in draft_data:
+                        st.session_state.tc_checklists = draft_data['tc_checklists']
+                    st.session_state['_active_draft_path'] = str(draft_path)
+                    st.session_state['_draft_handled'] = True
+                    st.session_state['_show_draft_restored'] = True
+                    st.rerun()
+            else:
+                st.session_state['_draft_handled'] = True
+
         st.markdown("### Report Type Selection")
         report_type = st.selectbox(
             "Select Report Type",
             ["Technical Report", "General Service Report", "Testing and Commissioning Report"],
-            index=0
+            key="report_type_selector"
         )
-        
+
         # Remove the coming soon check for Testing and Commissioning Report
+
+    # Show one-time restoration notice
+    if st.session_state.pop('_show_draft_restored', False):
+        st.success("Your previous work has been automatically restored.")
     
     # Main form based on report type
     if report_type == "Technical Report":
@@ -3658,6 +3782,36 @@ def main():
                         elif not equipment.get('location'):
                             equipment_errors.append(f"{equip_name}: Location is required")
             
+            # Check for empty report body — block submission if no core data
+            empty_report = False
+            if report_type == "Technical Report":
+                has_equipment = any(
+                    equip.get('type')
+                    for k in st.session_state.kitchen_list
+                    for equip in k.get('equipment_list', [])
+                )
+                if not has_equipment:
+                    empty_report = True
+                    st.error("**No equipment data found.** Please add at least one kitchen with equipment before generating the report. If you previously entered data and it's missing, your session may have been lost — check the 'Resume Previous Report' option in the sidebar.")
+            elif report_type == "Testing and Commissioning Report":
+                has_canopy = any(
+                    c.get('model') for c in st.session_state.get('canopy_data', [])
+                )
+                if not has_canopy:
+                    empty_report = True
+                    st.error("**No canopy data found.** Please add at least one hood with a model selected before generating the report. If you previously entered data and it's missing, your session may have been lost — check the 'Resume Previous Report' option in the sidebar.")
+            else:  # General Service Report
+                has_work = any(
+                    item.get('description', '').strip()
+                    for item in st.session_state.get('work_performed_list', [])
+                )
+                if not has_work:
+                    empty_report = True
+                    st.error("**No work performed items found.** Please add at least one work item before generating the report. If you previously entered data and it's missing, your session may have been lost — check the 'Resume Previous Report' option in the sidebar.")
+
+            if empty_report:
+                st.stop()
+
             # Show reminders for missing fields but don't block submission
             if missing_fields or equipment_errors:
                 st.warning("📋 **Reminder:** The following fields are recommended but not required:")
@@ -3670,8 +3824,8 @@ def main():
                     for error in equipment_errors:
                         st.write(f"• {error}")
                 st.info("The report will be generated with the available information.")
-            
-            # Always proceed with report generation
+
+            # Proceed with report generation
             # Process signature from canvas
             signature_img = None
             if canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0):
@@ -3793,7 +3947,12 @@ def main():
             st.session_state.report_generated = True
             st.session_state.saved_customer_name = customer_name
             st.session_state.saved_report_date = date
+            clear_draft()
     
+    # Auto-save draft on every interaction (skip if report was just generated)
+    if not st.session_state.get('report_generated'):
+        auto_save_draft()
+
     # Form sharing section (outside of form)
     st.markdown("### 🔗 Share Form Data")
     st.markdown("Save your current form inputs as a shareable link. Photos and signatures are not included.")
@@ -3855,6 +4014,7 @@ def main():
             # Option to generate another report
             if st.button("Generate Another Report", type="secondary"):
                 # Clear all session state data for a fresh start
+                clear_draft()
                 st.session_state.report_generated = False
                 st.session_state.kitchen_list = []
                 st.session_state.report_data = {}
