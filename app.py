@@ -98,6 +98,75 @@ if 'form_data' not in st.session_state:
 DRAFTS_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "drafts"
 DRAFTS_DIR.mkdir(exist_ok=True)
 
+
+def persist_photo(uploaded_file):
+    """Convert a Streamlit UploadedFile to a BytesIO that survives reruns.
+    Returns a BytesIO with a .name attribute so docx add_picture / seek(0) work."""
+    data = uploaded_file.read()
+    buf = io.BytesIO(data)
+    buf.name = getattr(uploaded_file, 'name', 'photo.jpg')
+    return buf
+
+
+def photo_to_base64(photo_buf):
+    """Serialize a BytesIO photo to a dict safe for JSON draft storage."""
+    photo_buf.seek(0)
+    return {
+        '_photo_b64': base64.b64encode(photo_buf.read()).decode('utf-8'),
+        'name': getattr(photo_buf, 'name', 'photo.jpg'),
+    }
+
+
+def base64_to_photo(obj):
+    """Deserialize a dict (from draft JSON) back to a BytesIO photo."""
+    raw = base64.b64decode(obj['_photo_b64'])
+    buf = io.BytesIO(raw)
+    buf.name = obj.get('name', 'photo.jpg')
+    return buf
+
+
+def _serialize_work_performed_list(work_list):
+    """Serialize work_performed_list with photos as base64 for JSON storage."""
+    serialized = []
+    for item in work_list:
+        entry = dict(item)
+        if entry.get('photos'):
+            entry['photos'] = []
+            for photo_buf in item['photos']:
+                try:
+                    entry['photos'].append(photo_to_base64(photo_buf))
+                except Exception:
+                    pass
+        serialized.append(entry)
+    return serialized
+
+
+def _deserialize_work_performed_list(work_list):
+    """Restore work_performed_list photos from base64 dicts back to BytesIO."""
+    for item in work_list:
+        if item.get('photos'):
+            restored = []
+            for photo_obj in item['photos']:
+                if isinstance(photo_obj, dict) and '_photo_b64' in photo_obj:
+                    restored.append(base64_to_photo(photo_obj))
+                else:
+                    restored.append(photo_obj)
+            item['photos'] = restored
+    return work_list
+
+
+def show_stored_photos(equipment, photo_key_prefix):
+    """Display thumbnails for photos already stored in session state."""
+    photos = equipment.get('photos', {})
+    matching = {k: v for k, v in photos.items()
+                if k == photo_key_prefix or k.startswith(f"{photo_key_prefix}_")}
+    if matching:
+        cols = st.columns(min(len(matching), 4))
+        for idx, (pk, pf) in enumerate(matching.items()):
+            with cols[idx % len(cols)]:
+                pf.seek(0)
+                st.image(pf, width=120, caption=pk.replace('photo_', '').replace('_', ' ').title())
+
 # K-Factor will now be manually entered by technicians
 # Default value is 0.0 for both extract and supply
 # Technicians can enter any K-Factor value based on their equipment and measurements
@@ -176,6 +245,7 @@ def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
         # Handle photo requirement for text fields
         if answer and item.get('photo'):
             photo_key = f"photo_{item_key}"
+            show_stored_photos(equipment, photo_key)
             uploaded_files = st.file_uploader(
                 f"📷 Upload photo(s) for: {question}",
                 type=['png', 'jpg', 'jpeg'],
@@ -185,12 +255,13 @@ def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
             if uploaded_files:
                 if 'photos' not in equipment:
                     equipment['photos'] = {}
-                # Store multiple photos with numbered keys
+                # Store multiple photos with numbered keys (persisted as BytesIO)
                 for i, uploaded_file in enumerate(uploaded_files):
+                    persisted = persist_photo(uploaded_file)
                     if len(uploaded_files) == 1:
-                        equipment['photos'][photo_key] = uploaded_file
+                        equipment['photos'][photo_key] = persisted
                     else:
-                        equipment['photos'][f"{photo_key}_{i+1}"] = uploaded_file
+                        equipment['photos'][f"{photo_key}_{i+1}"] = persisted
                 st.success(f"✅ {len(uploaded_files)} photo(s) uploaded")
         
     elif question_type == 'number':
@@ -243,22 +314,24 @@ def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
                 
                 # Photo upload for this alarm
                 alarm_photo_key = f"photo_alarm_{alarm_idx}"
+                show_stored_photos(equipment, alarm_photo_key)
                 uploaded_files = st.file_uploader(
                     f"📷 Upload photo(s) for Alarm {alarm_idx}",
                     type=['png', 'jpg', 'jpeg'],
                     key=f"photo_alarm_{alarm_idx}_{equip_key_prefix}",
                     accept_multiple_files=True
                 )
-                
+
                 if uploaded_files:
                     if 'photos' not in equipment:
                         equipment['photos'] = {}
-                    # Store multiple photos with numbered keys
+                    # Store multiple photos with numbered keys (persisted as BytesIO)
                     for j, uploaded_file in enumerate(uploaded_files):
+                        persisted = persist_photo(uploaded_file)
                         if len(uploaded_files) == 1:
-                            equipment['photos'][alarm_photo_key] = uploaded_file
+                            equipment['photos'][alarm_photo_key] = persisted
                         else:
-                            equipment['photos'][f"{alarm_photo_key}_{j+1}"] = uploaded_file
+                            equipment['photos'][f"{alarm_photo_key}_{j+1}"] = persisted
                     st.success(f"✅ {len(uploaded_files)} photo(s) uploaded for Alarm {alarm_idx}")
                 
                 # Add separator between alarms
@@ -282,6 +355,7 @@ def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
             # Handle photo requirement
             if condition.get('photo'):
                 photo_key = f"photo_{item_key}"
+                show_stored_photos(equipment, photo_key)
                 uploaded_files = st.file_uploader(
                     f"📷 Upload photo(s) for: {question}",
                     type=['png', 'jpg', 'jpeg'],
@@ -291,12 +365,13 @@ def render_checklist_item(equipment, item, equip_key_prefix, prefix=""):
                 if uploaded_files:
                     if 'photos' not in equipment:
                         equipment['photos'] = {}
-                    # Store multiple photos with numbered keys
+                    # Store multiple photos with numbered keys (persisted as BytesIO)
                     for i, uploaded_file in enumerate(uploaded_files):
+                        persisted = persist_photo(uploaded_file)
                         if len(uploaded_files) == 1:
-                            equipment['photos'][photo_key] = uploaded_file
+                            equipment['photos'][photo_key] = persisted
                         else:
-                            equipment['photos'][f"{photo_key}_{i+1}"] = uploaded_file
+                            equipment['photos'][f"{photo_key}_{i+1}"] = persisted
                     st.success(f"✅ {len(uploaded_files)} photo(s) uploaded")
             
             # Handle comment requirement
@@ -507,9 +582,16 @@ def get_kitchen_summary():
     return summary
 
 
-def collect_form_data():
-    """Collect all form data from session state for sharing"""
+def collect_form_data(include_photos=True):
+    """Collect all form data from session state for sharing/saving.
+    Set include_photos=False for shareable URLs (too large for URL encoding)."""
     try:
+        work_list = st.session_state.get('work_performed_list', [])
+        if include_photos:
+            serialized_work = _serialize_work_performed_list(work_list)
+        else:
+            serialized_work = [{k: v for k, v in item.items() if k != 'photos'} for item in work_list]
+
         form_data = {
             'basic_info': {
                 'customer_name': st.session_state.get('customer_name', ''),
@@ -526,7 +608,7 @@ def collect_form_data():
                 'technician_name': st.session_state.get('technician_name', ''),
                 'service_date': st.session_state.get('service_date', datetime.now()).isoformat() if st.session_state.get('service_date') else None,
                 'report_type': st.session_state.get('report_type_selector', 'Technical Report'),
-                'work_performed_list': st.session_state.get('work_performed_list', [])
+                'work_performed_list': serialized_work
             },
             'kitchen_data': {
                 'num_kitchens': st.session_state.get('num_kitchens', 1),
@@ -534,32 +616,41 @@ def collect_form_data():
             }
         }
         
-        # Collect kitchen and equipment data (excluding photos and signatures for size reasons)
+        # Collect kitchen and equipment data (now including photos as base64)
         for kitchen in st.session_state.get('kitchen_list', []):
             kitchen_data = {
                 'name': kitchen.get('name', ''),
                 'equipment_list': []
             }
-            
+
             for equipment in kitchen.get('equipment_list', []):
                 equipment_data = {
                     'type': equipment.get('type', ''),
                     'with_marvel': equipment.get('with_marvel', False),
                     'location': equipment.get('location', ''),
                     'inspection_data': {},
-                    'alarm_details': equipment.get('alarm_details', {})
+                    'alarm_details': equipment.get('alarm_details', {}),
+                    'photos': {}
                 }
-                
-                # Include inspection answers but exclude photos
+
+                # Include inspection answers
                 for key, data in equipment.get('inspection_data', {}).items():
                     if isinstance(data, dict):
                         equipment_data['inspection_data'][key] = {
                             'answer': data.get('answer', ''),
                             'comment': data.get('comment', '')
                         }
-                
+
+                # Serialize photos as base64 for draft persistence
+                if include_photos:
+                    for photo_key, photo_buf in equipment.get('photos', {}).items():
+                        try:
+                            equipment_data['photos'][photo_key] = photo_to_base64(photo_buf)
+                        except Exception:
+                            pass  # Skip unserializable photos
+
                 kitchen_data['equipment_list'].append(equipment_data)
-            
+
             form_data['kitchen_data']['kitchen_list'].append(kitchen_data)
 
         # Include T&C report data (canopy_data, tc_checklists)
@@ -673,7 +764,9 @@ def restore_form_data(form_data):
         
         # Restore work performed list for General Service Report
         if 'work_performed_list' in basic_info and basic_info['work_performed_list']:
-            st.session_state['work_performed_list'] = basic_info['work_performed_list']
+            st.session_state['work_performed_list'] = _deserialize_work_performed_list(
+                basic_info['work_performed_list']
+            )
             # Initialize counter and ensure all work items have unique IDs
             for i, work_item in enumerate(st.session_state['work_performed_list']):
                 if 'id' not in work_item or not work_item['id']:
@@ -697,6 +790,12 @@ def restore_form_data(form_data):
                 }
                 
                 for equipment_info in kitchen_info.get('equipment_list', []):
+                    # Restore photos from base64 if present in draft
+                    restored_photos = {}
+                    for pk, pv in equipment_info.get('photos', {}).items():
+                        if isinstance(pv, dict) and '_photo_b64' in pv:
+                            restored_photos[pk] = base64_to_photo(pv)
+
                     equipment = {
                         'id': f"equipment_{len(kitchen['equipment_list'])}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
                         'type': equipment_info.get('type', ''),
@@ -704,7 +803,7 @@ def restore_form_data(form_data):
                         'location': equipment_info.get('location', ''),
                         'inspection_data': equipment_info.get('inspection_data', {}),
                         'alarm_details': equipment_info.get('alarm_details', {}),
-                        'photos': {}  # Photos are not shared via links
+                        'photos': restored_photos
                     }
                     kitchen['equipment_list'].append(equipment)
                 
@@ -723,8 +822,8 @@ def restore_form_data(form_data):
 
 
 def generate_shareable_link():
-    """Generate a shareable link with current form data"""
-    form_data = collect_form_data()
+    """Generate a shareable link with current form data (photos excluded — too large for URL)"""
+    form_data = collect_form_data(include_photos=False)
     if not form_data:
         st.error("Failed to collect form data for sharing")
         return None
@@ -3477,25 +3576,33 @@ def main():
                 
                 # Photo upload for this work item
                 st.markdown("#### Photos for this work item")
+                # Show already-stored photos
+                if work_item.get('photos'):
+                    cols = st.columns(min(len(work_item['photos']), 4))
+                    for idx_p, photo_buf in enumerate(work_item['photos']):
+                        with cols[idx_p % len(cols)]:
+                            photo_buf.seek(0)
+                            st.image(photo_buf, width=120, caption=work_item.get('photo_descriptions', {}).get(str(idx_p), f"Photo {idx_p+1}"))
                 uploaded_files = st.file_uploader(
                     f"Upload photos for Work Item {i+1}",
                     type=['png', 'jpg', 'jpeg'],
                     key=f"work_photos_{work_item['id']}",
                     accept_multiple_files=True
                 )
-                
+
                 if uploaded_files:
-                    work_item['photos'] = uploaded_files
-                    
-                    # Photo descriptions
+                    work_item['photos'] = [persist_photo(f) for f in uploaded_files]
+
+                # Photo descriptions (shown for stored photos or freshly uploaded ones)
+                active_photos = work_item.get('photos', [])
+                if active_photos:
                     st.markdown("##### Photo Descriptions")
-                    for j, photo in enumerate(uploaded_files):
+                    for j, photo in enumerate(active_photos):
                         photo_desc_key = f"work_photo_desc_{work_item['id']}_{j}"
                         if photo_desc_key not in st.session_state:
-                            # Auto-fill with default description if empty
                             default_desc = f"{work_item.get('title', f'Work Item {i+1}')} - Photo {j+1}"
                             st.session_state[photo_desc_key] = work_item.get('photo_descriptions', {}).get(str(j), default_desc)
-                        
+
                         photo_desc = st.text_input(
                             f"Description for Photo {j+1}",
                             key=photo_desc_key,
